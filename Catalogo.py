@@ -5,7 +5,6 @@ import os
 FORMATO = '<i30s24s16sB'
 TAM_REGISTRO = struct.calcsize(FORMATO)  # Retorna exactamente 75 bytes
 
-
 # MODULO 1  Persistencia binaria de pacientes
 
 def empaquetar_paciente(paciente):
@@ -134,4 +133,155 @@ def buscar_por_dni(archivo, indice_por_dni, dni):
             return leer_paciente(f, k)
     else:
         return leer_paciente(archivo, k)
+    
+# Modulo 3 Reportes ordenados 
 
+# - Merge_sort del Problema 1 de la Semana
+def merge_sort(secuencia, key_funcion):
+    """
+    Ordena una secuencia de forma no decreciente utilizando el algoritmo Merge Sort.
+    Garantiza estabilidad en el ordenamiento de los registros.
+
+    Precondición: 'secuencia' debe ser una lista iterable con datos homogéneos.
+                  'key_funcion' es una función que extrae la clave de ordenación.
+    Postcondición: Devuelve una nueva lista ordenada según el criterio de key_funcion.
+                   La secuencia original no es modificada (Algoritmo no destructivo).
+    Complejidad: O(n log n) en tiempo y O(n) en espacio auxiliar. 
+    """
+    lista_a_ordenar = list(secuencia)
+    n = len(lista_a_ordenar)
+    if n <= 1:
+        resultado = lista_a_ordenar
+    else:
+        medio = n >> 1  
+        
+        izq = merge_sort(lista_a_ordenar[:medio], key_funcion)
+        der = merge_sort(lista_a_ordenar[medio:], key_funcion)
+        
+        resultado = _privada_fusionar(izq, der, key_funcion)
+    return resultado
+
+def _privada_fusionar(izq, der, key_funcion):
+    """
+    Función auxiliar encargada de fusionar dos sublistas ordenadas de manera estable.
+    """
+    resultado = []
+    i = 0
+    j = 0
+    limite_izq = len(izq)
+    limite_der = len(der)
+    while i < limite_izq and j < limite_der:
+        if key_funcion(izq[i]) <= key_funcion(der[j]):
+            resultado.append(izq[i])
+            i += 1
+        else:
+            resultado.append(der[j])
+            j += 1
+    while i < limite_izq:
+        resultado.append(izq[i])
+        i += 1
+    while j < limite_der:
+        resultado.append(der[j])
+        j += 1
+    return resultado
+
+# - Implementación de listar_pacientes_ordenados
+def obtener_prioridad(paciente):
+    """Retorna la prioridad de un paciente para el merge_sort."""
+    return paciente['prioridad']
+
+def obtener_apellido(paciente):
+    """Retorna el apellido de un paciente en minúsculas."""
+    return paciente['apellido'].lower()
+
+def listar_pacientes_ordenados(ruta, criterio):
+    """
+    Lee todos los registros de pacientes del archivo binario y genera una lista ordenada.
+    Precondición: 'ruta' apunta a un archivo binario existente y válido.
+                  'criterio' debe ser una cadena con valor exacto "apellido" o "prioridad".
+    Postcondición: Devuelve una lista de diccionarios de pacientes ordenados.
+    """
+    pacientes = []
+
+    with open(ruta, 'rb') as archivo:
+        registro = archivo.read(TAM_REGISTRO)
+        
+        while registro and len(registro) == TAM_REGISTRO: # Lectura secuencial de todo el archivo
+            # Utiliazación de la función del módulo 1 para devolver el diccionario
+            paciente = desempaquetar_paciente(registro) 
+            
+            pacientes.append(paciente)
+            registro = archivo.read(TAM_REGISTRO)
+ 
+    if criterio == "apellido":
+        resultado = merge_sort(pacientes, obtener_apellido)
+    
+    elif criterio == "prioridad":
+        # Primera Pasada: se ordena por el criterio de apellido 
+        lista_ordenada_apellido = merge_sort(pacientes, obtener_apellido)
+        # Segunda Pasada: se ordena usando el criterio de prioridad
+        resultado = merge_sort(lista_ordenada_apellido, obtener_prioridad)
+    else:
+        resultado = pacientes
+
+    return resultado
+
+# -- SECCIÓN DE MENU --
+
+def mostrar_opciones():
+    """Imprime la interfaz visual del menú por consola."""
+    print("\n" + "=" * 65)
+    print("      SISTEMA DE GESTIÓN MÉDICA - CONTROL CENTRAL")
+    print("=" * 65)
+    print("1. Buscar registros de paciente por DNI")
+    print("2. Generar reporte alfabético (por Apellido)")
+    print("3. Generar reporte jerárquico (por Prioridad y Apellido)")
+    print("4. Planificar asignación de agenda diaria (Backtracking)")
+    print("5. Salir del sistema")
+    print("=" * 65)
+
+def menu_principal():
+    base_pacientes = "pacientes.dat"
+    ejecutando = True # Evitar utilizar break o un while true 
+
+    mostrar_opciones() # Menu de inicio (fuera del loop para que no tape los resultados)
+
+    while ejecutando:
+        opcion = input("Seleccione una operación (1-5): ").strip()
+        
+        if opcion == "1":
+            print("\n>>> MÓDULO DE BÚSQUEDA INDEXADA (O(1)) <<<")
+            dni_objetivo = int(input("Ingrese el número de DNI a consultar: "))
+            paciente_hallado = buscar_por_dni(base_pacientes, indices_dni, dni_objetivo)
+
+            if paciente_hallado:
+                print(f"\n[Resultado] Paciente Encontrado:")
+                print(f"DNI: {paciente_hallado['dni']} | {paciente_hallado['apellido']}, {paciente_hallado['nombre']} | Tel: {paciente_hallado['telefono']} | Prioridad: {paciente_hallado['prioridad']}")
+            else:
+                print("\n[Resultado] El DNI ingresado no se encuentra en el sistema.")
+            
+        elif opcion == "2":
+            print("\n>>> REPORTE DE PACIENTES ORDENADOS POR APELLIDO <<<")
+            pacientes_ordenados = listar_pacientes_ordenados(base_pacientes, "apellido")   
+            for p in pacientes_ordenados:
+                print(f"DNI: {p['dni']} | {p['apellido']}, {p['nombre']} | Teléfono: {p['telefono']}")
+                
+        elif opcion == "3":
+            print("\n>>> REPORTE DE PACIENTES POR PRIORIDAD (CON DESEMPATE ALFABÉTICO) <<<")
+            pacientes_prioridad = listar_pacientes_ordenados(base_pacientes, "prioridad")
+            for p in pacientes_prioridad:
+                print(f"Prioridad: {p['prioridad']} | {p['apellido']}, {p['nombre']} | DNI: {p['dni']}")
+                
+        elif opcion == "4":
+            print("\n>>> MÓDULO DE ASIGNACIÓN INTELIGENTE DE AGENDA (BACKTRACKING) <<<")
+            # Módulo 4
+            
+        elif opcion == "5":
+            print("\n Programa finalizado. Gracias por utilizar el sistema de gestión médica. ")
+            ejecutando = False
+            
+        else:
+            print("\n[Error] Opción inválida. Ingrese un dígito del 1 al 5.")
+
+# --- INTERFAZ DEL USUARIO ---
+menu_principal()
