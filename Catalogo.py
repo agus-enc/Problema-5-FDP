@@ -5,7 +5,15 @@ import os
 FORMATO = '<i30s24s16sB'
 TAM_REGISTRO = struct.calcsize(FORMATO)  # Retorna exactamente 75 bytes
 
-# MODULO 1  Persistencia binaria de pacientes
+# Módulo 1 — Persistencia binaria de pacientes
+
+# Función auxiliar para truncamiento seguro a nivel de bytes
+def codificar_seguro(texto, max_bytes):
+    bytes_codificados = texto.encode('utf-8')
+    if len(bytes_codificados) <= max_bytes:
+        return bytes_codificados
+    # Trunca a nivel de byte, decodifica ignorando los caracteres rotos en el límite y vuelve a codificar
+    return bytes_codificados[:max_bytes].decode('utf-8', errors='ignore').encode('utf-8')
 
 def empaquetar_paciente(paciente):
     """
@@ -13,14 +21,14 @@ def empaquetar_paciente(paciente):
     Precondición: 'paciente' debe ser un diccionario válido con las claves 'dni' (int), 'apellido' (str), 'nombre' (str), 'telefono' (str) y 'prioridad' (int).
     Postcondición: Retorna una secuencia de exactamente 75 bytes lista para ser escrita en disco, con sus campos de texto codificados en UTF-8 y truncados si exceden su límite.
     """
-    dni = paciente['dni']                                               #Conversion de datos a binario con encode utf-8
-    apellido_bytes = paciente['apellido'].encode('utf-8')[:30]
-    nombre_bytes = paciente['nombre'].encode('utf-8')[:24]
-    telefono_bytes = paciente['telefono'].encode('utf-8')[:16]
-    prioridad = paciente['prioridad']
-    
-    return struct.pack(FORMATO, dni, apellido_bytes, nombre_bytes, telefono_bytes, prioridad)
+    dni = paciente['dni']
 
+    apellido_bytes = codificar_seguro(paciente['apellido'], 30)
+    nombre_bytes = codificar_seguro(paciente['nombre'], 24)
+    telefono_bytes = codificar_seguro(paciente['telefono'], 16)
+    prioridad = paciente['prioridad']
+
+    return struct.pack(FORMATO, dni, apellido_bytes, nombre_bytes, telefono_bytes, prioridad)
 
 def desempaquetar_paciente(registro_bytes):
     """
@@ -44,7 +52,6 @@ def desempaquetar_paciente(registro_bytes):
         'prioridad': prioridad
     }
 
-
 def crear_archivo_pacientes(ruta, lista_pacientes):
     """
     Genera o sobrescribe un archivo binario en el disco escribiendo secuencialmente los registros de una lista de pacientes.
@@ -56,28 +63,23 @@ def crear_archivo_pacientes(ruta, lista_pacientes):
             registro_bytes = empaquetar_paciente(paciente)
             archivo.write(registro_bytes)
 
-
 def leer_paciente(archivo, k):
     """
     Lee y desempaqueta el paciente ubicado en la posición relativa indexada 'k' del archivo binario utilizando acceso directo.
-    Precondición: 'archivo' debe ser una ruta (str) o un descriptor de archivo abierto para lectura binaria, y 'k' debe ser un entero no negativo.
+    Precondición: 'archivo' debe ser un descriptor de archivo abierto para lectura binaria ('rb'), y 'k' debe ser un entero no negativo.
     Postcondición: Retorna el diccionario del paciente correspondiente a la posición 'k', o devuelve None si el registro está fuera de rango o el archivo no existe.
     """
-    if type(archivo) == str:
-        with open(archivo, 'rb') as f:
-            f.seek(k * TAM_REGISTRO)
-            registro_bytes = f.read(TAM_REGISTRO)
-    else:
-        archivo.seek(k * TAM_REGISTRO)
-        registro_bytes = archivo.read(TAM_REGISTRO)
-        
+    # Se remueve la verificación de tipo y la apertura del archivo.
+    # 'archivo' ahora es obligatoriamente un file object.
+    archivo.seek(k * TAM_REGISTRO)
+    registro_bytes = archivo.read(TAM_REGISTRO)
+
     if not registro_bytes or len(registro_bytes) < TAM_REGISTRO:
         return None
-        
+
     return desempaquetar_paciente(registro_bytes)
 
-
-# MÓDULO 2 Indices en memoria
+# Módulo 2 — Índices en memoria
 
 def construir_indices(ruta):
     """
@@ -87,111 +89,138 @@ def construir_indices(ruta):
     """
     indice_por_dni = {}
     indice_por_apellido = {}
-    
+
     if not os.path.exists(ruta):
         return indice_por_dni, indice_por_apellido
 
     with open(ruta, 'rb') as archivo:
         k = 0
-        while True:
-            registro_bytes = archivo.read(TAM_REGISTRO)
-            if not registro_bytes or len(registro_bytes) < TAM_REGISTRO:
-                break
+        # Lectura adelantada antes del bucle
+        registro_bytes = archivo.read(TAM_REGISTRO)
 
+        while registro_bytes and len(registro_bytes) == TAM_REGISTRO:
             paciente = desempaquetar_paciente(registro_bytes)
             dni = paciente['dni']
             apellido = paciente['apellido']
-            
+
             indice_por_dni[dni] = k
-            
+
             if apellido not in indice_por_apellido:
                 indice_por_apellido[apellido] = []
             indice_por_apellido[apellido].append(k)
-            
-            k += 1
-            
-    return indice_por_dni, indice_por_apellido
 
+            k += 1
+            registro_bytes = archivo.read(TAM_REGISTRO)
+
+    return indice_por_dni, indice_por_apellido
 
 def buscar_por_dni(archivo, indice_por_dni, dni):
     """
     Encuentra y recupera los datos de un paciente a partir de su DNI en tiempo O(1) amortizado combinando el índice de memoria con acceso directo a disco.
     Precondición: 'archivo' debe ser una ruta o descriptor válido, 'indice_por_dni' debe ser el diccionario de índices cargado y 'dni' debe ser un entero.
     Postcondición: Retorna el diccionario del paciente hallado mediante un único salto posicional físico o None si el DNI no existe en el índice.
-    
+
     [NOTA TEÓRICA MANDATORIA - PUNTO D]:
     - Con Índice (O(1) promedio): La localización de 'k' se resuelve en tiempo constante en la tabla hash en memoria. El acceso al archivo binario es directo con un único 'seek' sin importar el volumen total de datos.
     - Búsqueda Secuencial (O(n)): Sin índice, requiere obligatoriamente leer secuencialmente de disco hasta 'n' registros, degradando el rendimiento linealmente conforme crece el archivo.
     """
+
     if dni not in indice_por_dni:
         return None
-        
+
     k = indice_por_dni[dni]
-    
-    if type(archivo) == str:
+
+    if isinstance(archivo, str):
         with open(archivo, 'rb') as f:
             return leer_paciente(f, k)
     else:
         return leer_paciente(archivo, k)
-    
-# Modulo 3 Reportes ordenados 
 
-# - Merge_sort del Problema 1 de la Semana
-def merge_sort(secuencia, key_funcion):
-    """
-    Ordena una secuencia de forma no decreciente utilizando el algoritmo Merge Sort.
-    Garantiza estabilidad en el ordenamiento de los registros.
+# Módulo 3 — Reportes ordenados
 
-    Precondición: 'secuencia' debe ser una lista iterable con datos homogéneos.
-                  'key_funcion' es una función que extrae la clave de ordenación.
-    Postcondición: Devuelve una nueva lista ordenada según el criterio de key_funcion.
-                   La secuencia original no es modificada (Algoritmo no destructivo).
-    Complejidad: O(n log n) en tiempo y O(n) en espacio auxiliar. 
+# - Merge_sort del Problema 1 de la Semana adaptado al problema 5
+def merge_sort(secuencia, key_funcion=lambda x: x):
     """
-    lista_a_ordenar = list(secuencia)
-    n = len(lista_a_ordenar)
+    Ordena una secuencia de elementos de forma no decreciente utilizando Merge Sort estable,
+    soportando funciones de extracción de claves para registros complejos.
+
+    Precondición:
+        - 'secuencia' debe ser una estructura iterable (lista o tupla).
+        - 'key_funcion' debe ser una función u objeto ejecutable que reciba un elemento
+          de la secuencia y retorne una clave comparable. Por defecto es la función identidad.
+    Postcondición:
+        - Devuelve una nueva lista ordenada según el criterio provisto por 'key_funcion'.
+        - Conserva el orden relativo original para claves idénticas (estabilidad garantizada).
+        - La secuencia original de entrada permanece intacta.
+    Complejidad:
+        - Temporal: O(n log n)
+        - Espacial: O(n) de espacio auxiliar.
+    """
+    n = len(secuencia)
+
     if n <= 1:
-        resultado = lista_a_ordenar
-    else:
-        medio = n >> 1  
-        
-        izq = merge_sort(lista_a_ordenar[:medio], key_funcion)
-        der = merge_sort(lista_a_ordenar[medio:], key_funcion)
-        
-        resultado = _privada_fusionar(izq, der, key_funcion)
-    return resultado
+        return secuencia
 
-def _privada_fusionar(izq, der, key_funcion):
+    medio = n >> 1
+
+    # Se propaga la función clave a las llamadas recursivas internas
+    izq = merge_sort(secuencia[:medio], key_funcion)
+    der = merge_sort(secuencia[medio:], key_funcion)
+
+    return _privada_fusionar(izq, der, key_funcion)
+
+def _privada_fusionar(izq, der, key_funcion=lambda x: x):
     """
-    Función auxiliar encargada de fusionar dos sublistas ordenadas de manera estable.
+    Combina dos sublistas ordenadas en una única lista ordenada de forma estable utilizando
+    una función de extracción de claves de comparación.
+
+    Precondición:
+        - 'izq' y 'der' deben ser listas previamente ordenadas de forma no decreciente bajo la misma 'key_funcion'.
+        - 'key_funcion' es una función de evaluación comparable válida.
+    Postcondición:
+        - Devuelve una nueva lista integrada y correctamente estabilizada bajo la clave evaluada.
     """
     resultado = []
     i = 0
     j = 0
     limite_izq = len(izq)
     limite_der = len(der)
+
     while i < limite_izq and j < limite_der:
+        # Se evalúan las claves extraídas por la función en lugar de comparar los objetos directamente
         if key_funcion(izq[i]) <= key_funcion(der[j]):
             resultado.append(izq[i])
             i += 1
         else:
             resultado.append(der[j])
             j += 1
-    while i < limite_izq:
-        resultado.append(izq[i])
-        i += 1
-    while j < limite_der:
-        resultado.append(der[j])
-        j += 1
+
+    resultado.extend(izq[i:])
+    resultado.extend(der[j:])
+
     return resultado
 
 # - Implementación de listar_pacientes_ordenados
 def obtener_prioridad(paciente):
-    """Retorna la prioridad de un paciente para el merge_sort."""
+    """
+    Extrae el valor del campo de prioridad para utilizarlo como clave de ordenamiento.
+
+    Precondición:
+        - 'paciente' debe ser un diccionario válido que contenga la clave 'prioridad' mapeada a un número entero.
+    Postcondición:
+        - Devuelve el valor entero correspondiente a la prioridad del paciente.
+    """
     return paciente['prioridad']
 
 def obtener_apellido(paciente):
-    """Retorna el apellido de un paciente en minúsculas."""
+    """
+    Extrae y normaliza el campo de apellido para utilizarlo como clave de ordenamiento alfabético.
+
+    Precondición:
+        - 'paciente' debe ser un diccionario válido que contenga la clave 'apellido' mapeada a una cadena de caracteres.
+    Postcondición:
+        - Devuelve una cadena de texto con el apellido del paciente convertido a minúsculas.
+    """
     return paciente['apellido'].lower()
 
 def listar_pacientes_ordenados(ruta, criterio):
@@ -202,34 +231,90 @@ def listar_pacientes_ordenados(ruta, criterio):
     Postcondición: Devuelve una lista de diccionarios de pacientes ordenados.
     """
     pacientes = []
+    criterio = criterio.strip().lower()
 
     with open(ruta, 'rb') as archivo:
         registro = archivo.read(TAM_REGISTRO)
-        
-        while registro and len(registro) == TAM_REGISTRO: # Lectura secuencial de todo el archivo
-            # Utiliazación de la función del módulo 1 para devolver el diccionario
-            paciente = desempaquetar_paciente(registro) 
-            
+
+        while registro and len(registro) == TAM_REGISTRO:
+            paciente = desempaquetar_paciente(registro)
             pacientes.append(paciente)
             registro = archivo.read(TAM_REGISTRO)
- 
-    if criterio == "apellido":
-        resultado = merge_sort(pacientes, obtener_apellido)
-    
-    elif criterio == "prioridad":
-        # Primera Pasada: se ordena por el criterio de apellido 
-        lista_ordenada_apellido = merge_sort(pacientes, obtener_apellido)
-        # Segunda Pasada: se ordena usando el criterio de prioridad
-        resultado = merge_sort(lista_ordenada_apellido, obtener_prioridad)
-    else:
-        resultado = pacientes
 
-    return resultado
+    if criterio == "apellido":
+        return merge_sort(pacientes, obtener_apellido)
+
+    if criterio == "prioridad":
+        # Encadenamiento directo para las dos pasadas: preserva memoria al evitar alojar la lista parcial en variables
+        return merge_sort(merge_sort(pacientes, obtener_apellido), obtener_prioridad)
+
+    return pacientes
+
+# Módulo 4 — Asignación de la agenda diaria por backtracking
+
+def _explorar_asignacion(indice_paciente, asignacion_actual, franjas_ocupadas_actuales, pac_dia, franj, disp):
+    """
+    Explora recursivamente el árbol de estados para construir una asignación válida de turnos.
+    Precondición:
+        - 'indice_paciente' es un número entero válido dentro del rango de índices de 'pac_dia'.
+        - 'asignacion_actual' es un diccionario con las asignaciones de pacientes consolidadas en la rama actual.
+        - 'franjas_ocupadas_actuales' es un conjunto (set) con las franjas ya extraídas en la rama actual.
+    Postcondición:
+        - Devuelve True si logra construir un árbol completo válido hacia las hojas; False si se agotan las opciones sin éxito.
+    Efectos secundarios:
+        - Muta de manera controlada las estructuras 'asignacion_actual' y 'franjas_ocupadas_actuales' durante la exploración. Estos cambios se revierten garantizadamente por diseño (backtrack) si la rama explorada resulta infértil.
+    """
+    # Caso base
+    if indice_paciente == len(pac_dia):
+        return True
+
+    paciente = pac_dia[indice_paciente]
+    franjas_posibles = disp.get(paciente, [])
+
+    for franja in franjas_posibles:
+        if franja in franj and franja not in franjas_ocupadas_actuales:
+            asignacion_actual[paciente] = franja
+            franjas_ocupadas_actuales.add(franja)
+
+            if _explorar_asignacion(indice_paciente + 1, asignacion_actual, franjas_ocupadas_actuales, pac_dia, franj,
+                                    disp):
+                return True
+
+            del asignacion_actual[paciente]
+            franjas_ocupadas_actuales.remove(franja)
+    return False
+
+def asignar_agenda(pacientes_del_dia, franjas, disponibilidad):
+    """
+    Asigna una franja horaria a cada paciente de la lista respetando su disponibilidad y la unicidad de las franjas.
+
+    Precondición:
+        - 'pacientes_del_dia' es una lista de identificadores de pacientes.
+        - 'franjas' es una lista de horarios disponibles.
+        - 'disponibilidad' es un diccionario {paciente: [franjas_posibles]}.
+    Postcondición:
+        - Devuelve un diccionario {paciente: franja} con una asignación válida, o None si no existe solución.
+    """
+
+    asignacion_inicial = {}
+    franjas_ocupadas_inicial = set()
+    franjas_set = set(franjas)
+    if _explorar_asignacion(0, asignacion_inicial, franjas_ocupadas_inicial, pacientes_del_dia, franjas_set, disponibilidad):
+        return asignacion_inicial
+    return None
 
 # -- SECCIÓN DE MENU --
 
 def mostrar_opciones():
-    """Imprime la interfaz visual del menú por consola."""
+    """
+    Imprime en la salida estándar la interfaz visual del menú principal del sistema.
+    Precondición:
+        - Ninguna.
+    Postcondición:
+        - Muestra el listado de las 5 opciones operativas disponibles.
+    Efectos secundarios:
+        - Modifica la salida estándar de la consola (stdout).
+    """
     print("\n" + "=" * 65)
     print("      SISTEMA DE GESTIÓN MÉDICA - CONTROL CENTRAL")
     print("=" * 65)
@@ -241,47 +326,97 @@ def mostrar_opciones():
     print("=" * 65)
 
 def menu_principal():
+    """
+        Articula la ejecución global del sistema, inicializa los recursos físicos en disco y gestiona el bucle de interacción.
+        Precondición:
+            - El entorno de ejecución debe poseer permisos de lectura y escritura en el directorio de trabajo actual para poder montar 'pacientes.dat'.
+        Postcondición:
+            - Finaliza la ejecución del programa de manera controlada y segura al seleccionar la opción de salida.
+        Efectos secundarios:
+            - Crea y sobrescribe de manera destructiva el archivo binario inicial de pacientes en el disco local.
+            - Modifica la salida estándar de la consola durante la interacción.
+            - Suspende la ejecución esperando el ingreso de datos a través de la entrada estándar (stdin).
+        """
     base_pacientes = "pacientes.dat"
-    ejecutando = True # Evitar utilizar break o un while true 
 
-    mostrar_opciones() # Menu de inicio (fuera del loop para que no tape los resultados)
+    # === SOLUCIÓN DEL RUNTIME ERROR & CUMPLIMIENTO CONSIGNA I ===
+    # 1. Crear el archivo con un set de datos iniciales de prueba
+    if not os.path.exists(base_pacientes):
+        pacientes_iniciales = [
+            {'dni': 12345678, 'apellido': 'Perez', 'nombre': 'Juan', 'telefono': '11223344', 'prioridad': 2},
+            {'dni': 87654321, 'apellido': 'Gomez', 'nombre': 'Maria', 'telefono': '55667788', 'prioridad': 1},
+            {'dni': 45678912, 'apellido': 'Perez', 'nombre': 'Luis', 'telefono': '99001122', 'prioridad': 3}
+        ]
+        crear_archivo_pacientes(base_pacientes, pacientes_iniciales)
+
+    # 2. Construir los índices en memoria RAM antes de iniciar el bucle interactivo
+    indices_dni, indices_apellido = construir_indices(base_pacientes)
+
+    ejecutando = True
+    mostrar_opciones()
 
     while ejecutando:
         opcion = input("Seleccione una operación (1-5): ").strip()
-        
+
         if opcion == "1":
             print("\n>>> MÓDULO DE BÚSQUEDA INDEXADA (O(1)) <<<")
-            dni_objetivo = int(input("Ingrese el número de DNI a consultar: "))
-            paciente_hallado = buscar_por_dni(base_pacientes, indices_dni, dni_objetivo)
+            try:
+                dni_objetivo = int(input("Ingrese el número de DNI a consultar: "))
+                paciente_hallado = buscar_por_dni(base_pacientes, indices_dni, dni_objetivo)
 
-            if paciente_hallado:
-                print(f"\n[Resultado] Paciente Encontrado:")
-                print(f"DNI: {paciente_hallado['dni']} | {paciente_hallado['apellido']}, {paciente_hallado['nombre']} | Tel: {paciente_hallado['telefono']} | Prioridad: {paciente_hallado['prioridad']}")
-            else:
-                print("\n[Resultado] El DNI ingresado no se encuentra en el sistema.")
-            
+                if paciente_hallado:
+                    print(f"\n[Resultado] Paciente Encontrado:")
+                    print(
+                        f"DNI: {paciente_hallado['dni']} | {paciente_hallado['apellido']}, {paciente_hallado['nombre']} | Tel: {paciente_hallado['telefono']} | Prioridad: {paciente_hallado['prioridad']}")
+                else:
+                    print("\n[Resultado] El DNI ingresado no se encuentra en el sistema.")
+            except ValueError:
+                print("\n[Error] El DNI ingresado debe ser un número entero válido (evita puntos o letras).")
+
         elif opcion == "2":
             print("\n>>> REPORTE DE PACIENTES ORDENADOS POR APELLIDO <<<")
-            pacientes_ordenados = listar_pacientes_ordenados(base_pacientes, "apellido")   
+            pacientes_ordenados = listar_pacientes_ordenados(base_pacientes, "apellido")
             for p in pacientes_ordenados:
                 print(f"DNI: {p['dni']} | {p['apellido']}, {p['nombre']} | Teléfono: {p['telefono']}")
-                
+
         elif opcion == "3":
             print("\n>>> REPORTE DE PACIENTES POR PRIORIDAD (CON DESEMPATE ALFABÉTICO) <<<")
             pacientes_prioridad = listar_pacientes_ordenados(base_pacientes, "prioridad")
             for p in pacientes_prioridad:
                 print(f"Prioridad: {p['prioridad']} | {p['apellido']}, {p['nombre']} | DNI: {p['dni']}")
-                
+
         elif opcion == "4":
             print("\n>>> MÓDULO DE ASIGNACIÓN INTELIGENTE DE AGENDA (BACKTRACKING) <<<")
-            # Módulo 4
-            
+            franjas_base = ["08:00", "08:30", "09:00", "09:30"]
+
+            print("\n--- Evaluando Caso 1: Asignación Posible ---")
+            pacientes_caso1 = ["Juan", "Maria", "Pedro"]
+            disp_caso1 = {"Juan": ["08:00", "08:30"], "Maria": ["08:00"], "Pedro": ["08:30", "09:00"]}
+            resultado1 = asignar_agenda(pacientes_caso1, franjas_base, disp_caso1)
+
+            if resultado1:
+                for pac, fran in resultado1.items():
+                    print(f"  - {pac} asignado a las {fran}")
+            else:
+                print("No se encontró solución.")
+
+            print("\n--- Evaluando Caso 2: Sobre-restringido ---")
+            pacientes_caso2 = ["Ana", "Luis", "Carlos"]
+            disp_caso2 = {"Ana": ["09:00"], "Luis": ["09:00"], "Carlos": ["09:30"]}
+            resultado2 = asignar_agenda(pacientes_caso2, franjas_base, disp_caso2)
+
+            if resultado2:
+                print("Asignación Exitosa (Inesperado).")
+            else:
+                print("Fallo esperado: No existe asignación válida posible debido a superposición.")
+
         elif opcion == "5":
             print("\n Programa finalizado. Gracias por utilizar el sistema de gestión médica. ")
             ejecutando = False
-            
+
         else:
             print("\n[Error] Opción inválida. Ingrese un dígito del 1 al 5.")
 
 # --- INTERFAZ DEL USUARIO ---
-menu_principal()
+if __name__ == '__main__':
+    menu_principal()
